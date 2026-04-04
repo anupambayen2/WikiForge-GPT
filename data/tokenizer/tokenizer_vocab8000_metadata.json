@@ -1,0 +1,12 @@
+{
+  "vocab_size": 8000,
+  "min_frequency": 2,
+  "special_tokens": [
+    "<|endoftext|>",
+    "<|pad|>",
+    "<|unk|>"
+  ],
+  "training_articles": 100000,
+  "tokenizer_type": "BPE",
+  "input_data": "E:\\WikiForge-GPT\\data\\processed\\consolidated"
+}
