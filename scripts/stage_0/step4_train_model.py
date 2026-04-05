@@ -16,7 +16,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from torch.amp import autocast, GradScaler  # Updated import
+from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
 # Force immediate output
@@ -33,7 +33,7 @@ print_now("Importing paths...")
 from paths import PATHS
 
 print_now("Importing GPT architecture...")
-from scripts.step3_gpt_architecture import GPTModel, GPTConfig
+from scripts.stage_0.step3_gpt_architecture import GPTModel, GPTConfig
 
 print_now("All imports successful!")
 
@@ -250,7 +250,7 @@ class Trainer:
         """Single training step."""
         batch = batch.to(self.device)
         
-        with autocast(device_type='cuda', enabled=self.use_amp):
+        with autocast(enabled=self.use_amp):
             logits, loss = self.model(batch, labels=batch)
         
         loss = loss / self.gradient_accumulation_steps
@@ -276,7 +276,7 @@ class Trainer:
             
             batch = batch.to(self.device)
             
-            with autocast(device_type='cuda', enabled=self.use_amp):
+            with autocast(enabled=self.use_amp):
                 logits, loss = self.model(batch, labels=batch)
             
             total_loss += loss.item()
@@ -322,11 +322,9 @@ class Trainer:
         print_now("NOTE: First batch may take 1-2 minutes to load...\n")
         
         running_loss = 0.0
-        train_iter = iter(self.train_loader)
+        start_time = time.time()
         
-        # Training start time
-        training_start_time = time.time()
-        step_start_time = time.time()
+        train_iter = iter(self.train_loader)
         
         print_now("Starting main training loop...\n")
         
@@ -362,64 +360,20 @@ class Trainer:
             lr = self._update_lr(self.current_step)
             self.current_step += 1
             
-            # Calculate step time
-            step_end_time = time.time()
-            step_time_ms = (step_end_time - step_start_time) * 1000
-            step_start_time = step_end_time
-            
             # Logging every 100 steps
             if self.current_step % self.log_interval == 0:
                 avg_loss = running_loss / self.log_interval
+                elapsed = time.time() - start_time
+                steps_per_sec = self.log_interval / elapsed
                 
-                # Calculate timing statistics
-                elapsed_time = time.time() - training_start_time
-                steps_remaining = self.max_steps - self.current_step
-                steps_per_sec = self.log_interval / (elapsed_time if self.current_step == self.log_interval else (time.time() - (training_start_time + elapsed_time - self.log_interval / (self.current_step / elapsed_time))))
-                
-                # Better calculation
-                if self.current_step > 0:
-                    avg_time_per_step = elapsed_time / self.current_step
-                    eta_seconds = steps_remaining * avg_time_per_step
-                    
-                    # Format ETA
-                    eta_hours = int(eta_seconds // 3600)
-                    eta_mins = int((eta_seconds % 3600) // 60)
-                    eta_secs = int(eta_seconds % 60)
-                    eta_str = f"{eta_hours}h{eta_mins:02d}m{eta_secs:02d}s"
-                    
-                    # Format elapsed time
-                    elapsed_hours = int(elapsed_time // 3600)
-                    elapsed_mins = int((elapsed_time % 3600) // 60)
-                    elapsed_secs = int(elapsed_time % 60)
-                    elapsed_str = f"{elapsed_hours}h{elapsed_mins:02d}m{elapsed_secs:02d}s"
-                    
-                    # Get VRAM usage
-                    if torch.cuda.is_available():
-                        vram_used = torch.cuda.memory_allocated() / 1024**3
-                        vram_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-                        vram_str = f"{vram_used:.1f}/{vram_total:.1f}GB"
-                    else:
-                        vram_str = "N/A"
-                    
-                    # Progress percentage
-                    progress = (self.current_step / self.max_steps) * 100
-                    
-                    print_now(
-                        f"Step {self.current_step:>6}/{self.max_steps} ({progress:>5.1f}%) | "
-                        f"Loss: {avg_loss:>6.4f} | LR: {lr:.2e} | "
-                        f"{step_time_ms:>5.1f}ms/step | "
-                        f"Elapsed: {elapsed_str} | ETA: {eta_str} | "
-                        f"VRAM: {vram_str}"
-                    )
+                print_now(f"Step {self.current_step:>6} | Loss: {avg_loss:.4f} | LR: {lr:.2e} | Steps/sec: {steps_per_sec:.2f}")
                 
                 # Save to log
                 log_entry = {
                     'step': self.current_step,
                     'loss': avg_loss,
                     'lr': lr,
-                    'step_time_ms': step_time_ms,
-                    'elapsed_time': elapsed_time if self.current_step > 0 else 0,
-                    'eta_seconds': eta_seconds if self.current_step > 0 else 0,
+                    'steps_per_sec': steps_per_sec,
                 }
                 
                 log_file = self.logs_dir / "training_log.jsonl"
@@ -427,6 +381,7 @@ class Trainer:
                     f.write(json.dumps(log_entry) + '\n')
                 
                 running_loss = 0.0
+                start_time = time.time()
             
             # Evaluation every 1000 steps
             if self.current_step % self.eval_interval == 0:
@@ -448,19 +403,11 @@ class Trainer:
             elif self.current_step % self.save_interval == 0:
                 self.save_checkpoint(self.current_step)
         
-        # Training complete
-        total_time = time.time() - training_start_time
-        total_hours = int(total_time // 3600)
-        total_mins = int((total_time % 3600) // 60)
-        total_secs = int(total_time % 60)
-        
         print_now(f"\n{'='*80}")
         print_now("✅ TRAINING COMPLETE!")
         print_now(f"{'='*80}")
         print_now(f"Total steps: {self.current_step}")
         print_now(f"Best val loss: {self.best_val_loss:.4f}")
-        print_now(f"Total time: {total_hours}h{total_mins:02d}m{total_secs:02d}s")
-        print_now(f"Average: {total_time/self.current_step:.2f}s per step")
 
 
 def main():
